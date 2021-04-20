@@ -2,10 +2,12 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Diagnostics;
 using System.IO.Pipelines;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Connections;
+using Microsoft.AspNetCore.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
@@ -15,7 +17,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
         private readonly Http2Stream _context;
         private ReadResult _readResult;
 
-        private Http2MessageBody(Http2Stream context)
+        public Http2MessageBody(Http2Stream context)
             : base(context)
         {
             _context = context;
@@ -26,50 +28,46 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
             // Note ContentLength or MaxRequestBodySize may be null
             if (_context.RequestHeaders.ContentLength > _context.MaxRequestBodySize)
             {
-                BadHttpRequestException.Throw(RequestRejectionReason.RequestBodyTooLarge);
+                KestrelBadHttpRequestException.Throw(RequestRejectionReason.RequestBodyTooLarge);
             }
         }
 
-        protected override void OnReadStarted()
+        protected override Task OnReadStartedAsync()
         {
             // Produce 100-continue if no request body data for the stream has arrived yet.
             if (!_context.RequestBodyStarted)
             {
-                TryProduceContinue();
-            }
-        }
-
-        protected override void OnDataRead(long bytesRead)
-        {
-            // The HTTP/2 flow control window cannot be larger than 2^31-1 which limits bytesRead.
-            _context.OnDataRead((int)bytesRead);
-            AddAndCheckConsumedBytes(bytesRead);
-        }
-
-        public static MessageBody For(Http2Stream context)
-        {
-            if (context.ReceivedEmptyRequestBody)
-            {
-                return ZeroContentLengthClose;
+                ValueTask<FlushResult> continueTask = TryProduceContinueAsync();
+                if (!continueTask.IsCompletedSuccessfully)
+                {
+                    return continueTask.GetAsTask();
+                }
             }
 
-            return new Http2MessageBody(context);
+            return Task.CompletedTask;
         }
 
-        public override void AdvanceTo(SequencePosition consumed)
+        public override void Reset()
         {
-            AdvanceTo(consumed, consumed);
+            base.Reset();
+            _readResult = default;
         }
 
         public override void AdvanceTo(SequencePosition consumed, SequencePosition examined)
         {
-            OnAdvance(_readResult, consumed, examined);
+            var newlyExaminedBytes = TrackConsumedAndExaminedBytes(_readResult, consumed, examined);
+
+            // Ensure we consume data from the RequestBodyPipe before sending WINDOW_UPDATES to the client.
             _context.RequestBodyPipe.Reader.AdvanceTo(consumed, examined);
+
+            // The HTTP/2 flow control window cannot be larger than 2^31-1 which limits bytesRead.
+            _context.OnDataRead((int)newlyExaminedBytes);
+            AddAndCheckObservedBytes(newlyExaminedBytes);
         }
 
         public override bool TryRead(out ReadResult readResult)
         {
-            TryStart();
+            TryStartAsync();
 
             var hasResult = _context.RequestBodyPipe.Reader.TryRead(out readResult);
 
@@ -90,7 +88,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
 
         public override async ValueTask<ReadResult> ReadAsync(CancellationToken cancellationToken = default)
         {
-            TryStart();
+            await TryStartAsync();
 
             try
             {
@@ -113,10 +111,16 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
             return _readResult;
         }
 
-        public override void Complete(Exception exception)
+        public override void Complete(Exception? exception)
         {
-            _context.RequestBodyPipe.Reader.Complete();
             _context.ReportApplicationError(exception);
+            _context.RequestBodyPipe.Reader.Complete();
+        }
+
+        public override ValueTask CompleteAsync(Exception? exception)
+        {
+            _context.ReportApplicationError(exception);
+            return _context.RequestBodyPipe.Reader.CompleteAsync();
         }
 
         public override void CancelPendingRead()
@@ -124,16 +128,16 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
             _context.RequestBodyPipe.Reader.CancelPendingRead();
         }
 
-        protected override Task OnStopAsync()
+        protected override ValueTask OnStopAsync()
         {
             if (!_context.HasStartedConsumingRequestBody)
             {
-                return Task.CompletedTask;
+                return default;
             }
 
             _context.RequestBodyPipe.Reader.Complete();
 
-            return Task.CompletedTask;
+            return default;
         }
     }
 }

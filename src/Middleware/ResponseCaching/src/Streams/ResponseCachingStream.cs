@@ -45,13 +45,13 @@ namespace Microsoft.AspNetCore.ResponseCaching
             }
         }
 
-        internal Stream GetBufferStream()
+        internal CachedResponseBody GetCachedResponseBody()
         {
             if (!BufferingEnabled)
             {
                 throw new InvalidOperationException("Buffer stream cannot be retrieved since buffering is disabled.");
             }
-            return new SegmentReadStream(_segmentWriteStream.GetSegments(), _segmentWriteStream.Length);
+            return new CachedResponseBody(_segmentWriteStream.GetSegments(), _segmentWriteStream.Length);
         }
 
         internal void DisableBuffering()
@@ -181,18 +181,10 @@ namespace Microsoft.AspNetCore.ResponseCaching
             }
         }
 
-        public override IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
-        {
-            return StreamUtilities.ToIAsyncResult(WriteAsync(buffer, offset, count), callback, state);
-        }
+        public override IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback? callback, object? state)
+            => TaskToApm.Begin(WriteAsync(buffer, offset, count, CancellationToken.None), callback, state);
 
         public override void EndWrite(IAsyncResult asyncResult)
-        {
-            if (asyncResult == null)
-            {
-                throw new ArgumentNullException(nameof(asyncResult));
-            }
-            ((Task)asyncResult).GetAwaiter().GetResult();
-        }
+            => TaskToApm.End(asyncResult);
     }
 }

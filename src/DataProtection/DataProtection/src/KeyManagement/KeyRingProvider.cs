@@ -15,7 +15,7 @@ namespace Microsoft.AspNetCore.DataProtection.KeyManagement
 {
     internal sealed class KeyRingProvider : ICacheableKeyRingProvider, IKeyRingProvider
     {
-        private CacheableKeyRing _cacheableKeyRing;
+        private CacheableKeyRing? _cacheableKeyRing;
         private readonly object _cacheableKeyRingLockObj = new object();
         private readonly IDefaultKeyResolver _defaultKeyResolver;
         private readonly KeyManagementOptions _keyManagementOptions;
@@ -46,7 +46,7 @@ namespace Microsoft.AspNetCore.DataProtection.KeyManagement
             _defaultKeyResolver = defaultKeyResolver;
             _logger = loggerFactory.CreateLogger<KeyRingProvider>();
 
-            // We will automatically refresh any unknown keys for 2 minutes see https://github.com/aspnet/AspNetCore/issues/3975
+            // We will automatically refresh any unknown keys for 2 minutes see https://github.com/dotnet/aspnetcore/issues/3975
             AutoRefreshWindowEnd = DateTime.UtcNow.AddMinutes(2);
         }
 
@@ -57,7 +57,7 @@ namespace Microsoft.AspNetCore.DataProtection.KeyManagement
 
         internal bool InAutoRefreshWindow() => DateTime.UtcNow < AutoRefreshWindowEnd;
 
-        private CacheableKeyRing CreateCacheableKeyRingCore(DateTimeOffset now, IKey keyJustAdded)
+        private CacheableKeyRing CreateCacheableKeyRingCore(DateTimeOffset now, IKey? keyJustAdded)
         {
             // Refresh the list of all keys
             var cacheExpirationToken = _keyManager.GetCacheExpirationToken();
@@ -159,7 +159,7 @@ namespace Microsoft.AspNetCore.DataProtection.KeyManagement
             Debug.Assert(utcNow.Kind == DateTimeKind.Utc);
 
             // Can we return the cached keyring to the caller?
-            CacheableKeyRing existingCacheableKeyRing = null;
+            CacheableKeyRing? existingCacheableKeyRing = null;
             if (!forceRefresh)
             {
                 existingCacheableKeyRing = Volatile.Read(ref _cacheableKeyRing);

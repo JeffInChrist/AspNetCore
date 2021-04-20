@@ -2,7 +2,9 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Security.Claims;
 using System.Threading.Tasks;
+using Identity.DefaultUI.WebSite;
 using Microsoft.AspNetCore.Identity.UI.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -32,7 +34,7 @@ namespace Microsoft.AspNetCore.Identity.FunctionalTests
                     .CreateClient();
 
             var userName = $"{Guid.NewGuid()}@example.com";
-            var password = $"!Test.Password1$";
+            var password = $"[PLACEHOLDER]-1a";
 
             // Act & Assert
             await UserStories.RegisterNewUserAsync(client, userName, password);
@@ -50,7 +52,7 @@ namespace Microsoft.AspNetCore.Identity.FunctionalTests
             var client2 = server.CreateClient();
 
             var userName = $"{Guid.NewGuid()}@example.com";
-            var password = $"!Test.Password1$";
+            var password = $"[PLACEHOLDER]-1a";
 
             // Act & Assert
             var register = await UserStories.RegisterNewUserAsyncWithConfirmation(client, userName, password);
@@ -82,7 +84,7 @@ namespace Microsoft.AspNetCore.Identity.FunctionalTests
             var client2 = server.CreateClient();
 
             var userName = $"{Guid.NewGuid()}@example.com";
-            var password = $"!Test.Password1$";
+            var password = $"[PLACEHOLDER]-1a";
 
             // Act & Assert
             var register = await UserStories.RegisterNewUserAsyncWithConfirmation(client, userName, password, hasRealEmailSender: true);
@@ -103,7 +105,7 @@ namespace Microsoft.AspNetCore.Identity.FunctionalTests
                     .CreateClient();
 
             var userName = $"{Guid.NewGuid()}@example.com";
-            var password = $"!Test.Password1$";
+            var password = $"[PLACEHOLDER]-1a";
 
             // Act & Assert
             await UserStories.RegisterNewUserAsync(client, userName, password);
@@ -155,9 +157,10 @@ namespace Microsoft.AspNetCore.Identity.FunctionalTests
         public async Task CanRegisterWithASocialLoginProviderFromLoginWithConfirmationAndRealEmailSender()
         {
             // Arrange
+            var emailSender = new ContosoEmailSender();
             void ConfigureTestServices(IServiceCollection services)
             {
-                services.AddSingleton<IEmailSender, FakeEmailSender>();
+                services.SetupTestEmailSender(emailSender);
                 services
                         .Configure<IdentityOptions>(o => o.SignIn.RequireConfirmedAccount = true)
                         .SetupTestThirdPartyLogin();
@@ -173,6 +176,7 @@ namespace Microsoft.AspNetCore.Identity.FunctionalTests
 
             // Act & Assert
             await UserStories.RegisterNewUserWithSocialLoginWithConfirmationAsync(client, userName, email, hasRealEmailSender: true);
+            Assert.Single(emailSender.SentEmails);
         }
 
         [Fact]
@@ -214,6 +218,32 @@ namespace Microsoft.AspNetCore.Identity.FunctionalTests
 
             // Act & Assert
             await UserStories.RegisterNewUserWithSocialLoginAsync(client, userName, email);
+        }
+
+        [Fact]
+        public async Task RegisterWithASocialLoginProviderSetsAuthenticationMethodClaim()
+        {
+            // Arrange
+            string authenticationMethod = null;
+
+            void ConfigureTestServices(IServiceCollection services) =>
+                services
+                    .SetupTestThirdPartyLogin()
+                    .SetupGetUserClaimsPrincipal(user =>
+                        authenticationMethod = user.FindFirstValue(ClaimTypes.AuthenticationMethod), IdentityConstants.ApplicationScheme);
+
+            var client = ServerFactory
+                .WithWebHostBuilder(whb => whb.ConfigureServices(ConfigureTestServices))
+                .CreateClient();
+
+            var guid = Guid.NewGuid();
+            var userName = $"{guid}";
+            var email = $"{guid}@example.com";
+
+            // Act & Assert
+            await UserStories.RegisterNewUserWithSocialLoginAsync(client, userName, email);
+
+            Assert.Equal("Contoso", authenticationMethod);
         }
     }
 }

@@ -1,6 +1,7 @@
 // Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
+import { MessageHeaders } from "../src/IHubProtocol";
 import { TransferFormat } from "../src/ITransport";
 
 import { HttpClient, HttpRequest } from "../src/HttpClient";
@@ -17,7 +18,7 @@ registerUnhandledRejectionHandler();
 describe("ServerSentEventsTransport", () => {
     it("does not allow non-text formats", async () => {
         await VerifyLogger.run(async (logger) => {
-            const sse = new ServerSentEventsTransport(new TestHttpClient(), undefined, logger, true, TestEventSource, true);
+            const sse = new ServerSentEventsTransport(new TestHttpClient(), undefined, logger, true, TestEventSource, true, {});
 
             await expect(sse.connect("", TransferFormat.Binary))
                 .rejects
@@ -27,7 +28,7 @@ describe("ServerSentEventsTransport", () => {
 
     it("connect waits for EventSource to be connected", async () => {
         await VerifyLogger.run(async (logger) => {
-            const sse = new ServerSentEventsTransport(new TestHttpClient(), undefined, logger, true, TestEventSource, true);
+            const sse = new ServerSentEventsTransport(new TestHttpClient(), undefined, logger, true, TestEventSource, true, {});
 
             let connectComplete: boolean = false;
             const connectPromise = (async () => {
@@ -48,7 +49,7 @@ describe("ServerSentEventsTransport", () => {
 
     it("connect failure does not call onclose handler", async () => {
         await VerifyLogger.run(async (logger) => {
-            const sse = new ServerSentEventsTransport(new TestHttpClient(), undefined, logger, true, TestEventSource, true);
+            const sse = new ServerSentEventsTransport(new TestHttpClient(), undefined, logger, true, TestEventSource, true, {});
             let closeCalled = false;
             sse.onclose = () => closeCalled = true;
 
@@ -62,7 +63,7 @@ describe("ServerSentEventsTransport", () => {
 
             await expect(connectPromise)
                 .rejects
-                .toEqual(new Error("Error occurred"));
+                .toEqual(new Error("EventSource failed to connect. The connection could not be found on the server, either the connection ID is not present on the server, or a proxy is refusing/buffering the connection. If you have multiple servers check that sticky sessions are enabled."));
             expect(closeCalled).toBe(false);
         });
     });
@@ -163,13 +164,13 @@ describe("ServerSentEventsTransport", () => {
 
             expect(closeCalled).toBe(true);
             expect(TestEventSource.eventSource.closed).toBe(true);
-            expect(error).toEqual(new Error("error"));
+            expect(error).toBeUndefined();
         });
     });
 
     it("send throws if not connected", async () => {
         await VerifyLogger.run(async (logger) => {
-            const sse = new ServerSentEventsTransport(new TestHttpClient(), undefined, logger, true, TestEventSource, true);
+            const sse = new ServerSentEventsTransport(new TestHttpClient(), undefined, logger, true, TestEventSource, true, {});
 
             await expect(sse.send(""))
                 .rejects
@@ -221,10 +222,31 @@ describe("ServerSentEventsTransport", () => {
             expect(request!.url).toBe("http://example.com");
         });
     });
+
+    it("overwrites library headers with user headers", async () => {
+        await VerifyLogger.run(async (logger) => {
+            let request: HttpRequest;
+            const httpClient = new TestHttpClient().on((r) => {
+                request = r;
+                return "";
+            });
+
+            const headers = { "User-Agent": "Custom Agent", "X-HEADER": "VALUE" };
+            const sse = await createAndStartSSE(logger, "http://example.com", undefined, httpClient, headers);
+
+            expect((TestEventSource.eventSource.eventSourceInitDict as any).headers["User-Agent"]).toEqual("Custom Agent");
+            expect((TestEventSource.eventSource.eventSourceInitDict as any).headers["X-HEADER"]).toEqual("VALUE");
+            await sse.send("");
+
+            expect(request!.headers!["User-Agent"]).toEqual("Custom Agent");
+            expect(request!.headers!["X-HEADER"]).toEqual("VALUE");
+            expect(request!.url).toBe("http://example.com");
+        });
+    });
 });
 
-async function createAndStartSSE(logger: ILogger, url?: string, accessTokenFactory?: (() => string | Promise<string>), httpClient?: HttpClient): Promise<ServerSentEventsTransport> {
-    const sse = new ServerSentEventsTransport(httpClient || new TestHttpClient(), accessTokenFactory, logger, true, TestEventSource, true);
+async function createAndStartSSE(logger: ILogger, url?: string, accessTokenFactory?: (() => string | Promise<string>), httpClient?: HttpClient, headers?: MessageHeaders): Promise<ServerSentEventsTransport> {
+    const sse = new ServerSentEventsTransport(httpClient || new TestHttpClient(), accessTokenFactory, logger, true, TestEventSource, true, headers || {});
 
     const connectPromise = sse.connect(url || "http://example.com", TransferFormat.Text);
     await TestEventSource.eventSource.openSet;

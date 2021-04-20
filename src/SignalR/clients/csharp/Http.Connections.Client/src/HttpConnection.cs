@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.IO.Pipelines;
 using System.Linq;
 using System.Net.Http;
@@ -27,7 +28,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
         // a buggy server
         private static readonly int _maxRedirects = 100;
         private static readonly int _protocolVersionNumber = 1;
-        private static readonly Task<string> _noAccessToken = Task.FromResult<string>(null);
+        private static readonly Task<string?> _noAccessToken = Task.FromResult<string?>(null);
 
         private static readonly TimeSpan HttpClientTimeout = TimeSpan.FromSeconds(120);
 
@@ -38,14 +39,15 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
         private bool _disposed;
         private bool _hasInherentKeepAlive;
 
-        private readonly HttpClient _httpClient;
+        private readonly HttpClient? _httpClient;
         private readonly HttpConnectionOptions _httpConnectionOptions;
-        private ITransport _transport;
+        private ITransport? _transport;
         private readonly ITransportFactory _transportFactory;
-        private string _connectionId;
+        private string? _connectionId;
         private readonly ConnectionLogScope _logScope;
         private readonly ILoggerFactory _loggerFactory;
-        private Func<Task<string>> _accessTokenProvider;
+        private readonly Uri _url;
+        private Func<Task<string?>>? _accessTokenProvider;
 
         /// <inheritdoc />
         public override IDuplexPipe Transport
@@ -73,14 +75,16 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
         /// If the connection was created with <see cref="HttpConnectionOptions.SkipNegotiation"/> set to <c>true</c>
         /// then the connection ID will be <c>null</c>.
         /// </remarks>
-        public override string ConnectionId
+        public override string? ConnectionId
         {
+#pragma warning disable CS8764 // Nullability of return type doesn't match overridden member (possibly because of nullability attributes).
             get => _connectionId;
+#pragma warning restore CS8764 // Nullability of return type doesn't match overridden member (possibly because of nullability attributes).
             set => throw new InvalidOperationException("The ConnectionId is set internally and should not be set by user code.");
         }
 
         /// <inheritdoc />
-        public override IDictionary<object, object> Items { get; set; } = new ConnectionItems();
+        public override IDictionary<object, object?> Items { get; set; } = new ConnectionItems();
 
         /// <inheritdoc />
         bool IConnectionInherentKeepAliveFeature.HasInherentKeepAlive => _hasInherentKeepAlive;
@@ -109,7 +113,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
         /// <param name="url">The URL to connect to.</param>
         /// <param name="transports">A bitmask combining one or more <see cref="HttpTransportType"/> values that specify what transports the client should use.</param>
         /// <param name="loggerFactory">The logger factory.</param>
-        public HttpConnection(Uri url, HttpTransportType transports, ILoggerFactory loggerFactory)
+        public HttpConnection(Uri url, HttpTransportType transports, ILoggerFactory? loggerFactory)
             : this(CreateHttpOptions(url, transports), loggerFactory)
         {
         }
@@ -128,7 +132,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
         /// </summary>
         /// <param name="httpConnectionOptions">The connection options to use.</param>
         /// <param name="loggerFactory">The logger factory.</param>
-        public HttpConnection(HttpConnectionOptions httpConnectionOptions, ILoggerFactory loggerFactory)
+        public HttpConnection(HttpConnectionOptions httpConnectionOptions, ILoggerFactory? loggerFactory)
         {
             if (httpConnectionOptions == null)
             {
@@ -145,9 +149,16 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
             _logger = _loggerFactory.CreateLogger<HttpConnection>();
             _httpConnectionOptions = httpConnectionOptions;
 
+            _url = _httpConnectionOptions.Url;
+
             if (!httpConnectionOptions.SkipNegotiation || httpConnectionOptions.Transports != HttpTransportType.WebSockets)
             {
                 _httpClient = CreateHttpClient();
+            }
+
+            if (httpConnectionOptions.Transports == HttpTransportType.ServerSentEvents && OperatingSystem.IsBrowser())
+            {
+                throw new ArgumentException("ServerSentEvents can not be the only transport specified when running in the browser.", nameof(httpConnectionOptions));
             }
 
             _transportFactory = new DefaultTransportFactory(httpConnectionOptions.Transports, _loggerFactory, _httpClient, httpConnectionOptions, GetAccessTokenAsync);
@@ -172,6 +183,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
         /// A connection cannot be restarted after it has stopped. To restart a connection
         /// a new instance should be created using the same options.
         /// </remarks>
+        [SuppressMessage("ApiDesign", "RS0026:Do not add multiple overloads with optional parameters", Justification = "Required to maintain compatibility")]
         public Task StartAsync(CancellationToken cancellationToken = default)
         {
             return StartAsync(_httpConnectionOptions.DefaultTransferFormat, cancellationToken);
@@ -187,6 +199,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
         /// A connection cannot be restarted after it has stopped. To restart a connection
         /// a new instance should be created using the same options.
         /// </remarks>
+        [SuppressMessage("ApiDesign", "RS0026:Do not add multiple overloads with optional parameters", Justification = "Required to maintain compatibility")]
         public async Task StartAsync(TransferFormat transferFormat, CancellationToken cancellationToken = default)
         {
             using (_logger.BeginScope(_logScope))
@@ -205,7 +218,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
                 return;
             }
 
-            await _connectionLock.WaitAsync();
+            await _connectionLock.WaitAsync(cancellationToken);
             try
             {
                 CheckDisposed();
@@ -263,7 +276,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
                     // The transport should also have completed the pipe with this exception.
                     try
                     {
-                        await _transport.StopAsync();
+                        await _transport!.StopAsync();
                     }
                     catch (Exception ex)
                     {
@@ -293,7 +306,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
 
         private async Task SelectAndStartTransport(TransferFormat transferFormat, CancellationToken cancellationToken)
         {
-            var uri = _httpConnectionOptions.Url;
+            var uri = _url;
             // Set the initial access token provider back to the original one from options
             _accessTokenProvider = _httpConnectionOptions.AccessTokenProvider;
 
@@ -313,7 +326,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
             }
             else
             {
-                NegotiationResponse negotiationResponse;
+                NegotiationResponse? negotiationResponse;
                 var redirects = 0;
 
                 do
@@ -329,7 +342,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
                     {
                         string accessToken = negotiationResponse.AccessToken;
                         // Set the current access token factory so that future requests use this access token
-                        _accessTokenProvider = () => Task.FromResult(accessToken);
+                        _accessTokenProvider = () => Task.FromResult<string?>(accessToken);
                     }
 
                     redirects++;
@@ -349,12 +362,12 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
                 // we don't understand in the negotiate response.
                 var transferFormatString = transferFormat.ToString();
 
-                foreach (var transport in negotiationResponse.AvailableTransports)
+                foreach (var transport in negotiationResponse.AvailableTransports!)
                 {
                     if (!Enum.TryParse<HttpTransportType>(transport.Transport, out var transportType))
                     {
-                        Log.TransportNotSupported(_logger, transport.Transport);
-                        transportExceptions.Add(new TransportFailedException(transport.Transport, "The transport is not supported by the client."));
+                        Log.TransportNotSupported(_logger, transport.Transport!);
+                        transportExceptions.Add(new TransportFailedException(transport.Transport!, "The transport is not supported by the client."));
                         continue;
                     }
 
@@ -365,6 +378,13 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
                         continue;
                     }
 
+                    if (transportType == HttpTransportType.ServerSentEvents && OperatingSystem.IsBrowser())
+                    {
+                        Log.ServerSentEventsNotSupportedByBrowser(_logger);
+                        transportExceptions.Add(new TransportFailedException("ServerSentEvents", "The transport is not supported in the browser."));
+                        continue;
+                    }
+
                     try
                     {
                         if ((transportType & _httpConnectionOptions.Transports) == 0)
@@ -372,7 +392,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
                             Log.TransportDisabledByClient(_logger, transportType);
                             transportExceptions.Add(new TransportFailedException(transportType.ToString(), "The transport is disabled by the client."));
                         }
-                        else if (!transport.TransferFormats.Contains(transferFormatString, StringComparer.Ordinal))
+                        else if (!transport.TransferFormats!.Contains(transferFormatString, StringComparer.Ordinal))
                         {
                             Log.TransportDoesNotSupportTransferFormat(_logger, transportType, transferFormat);
                             transportExceptions.Add(new TransportFailedException(transportType.ToString(), $"The transport does not support the '{transferFormat}' transfer format."));
@@ -424,7 +444,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
                 // Get a connection ID from the server
                 Log.EstablishingConnection(logger, url);
                 var urlBuilder = new UriBuilder(url);
-                if (!urlBuilder.Path.EndsWith("/"))
+                if (!urlBuilder.Path.EndsWith("/", StringComparison.Ordinal))
                 {
                     urlBuilder.Path += "/";
                 }
@@ -457,7 +477,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
                         {
                             throw new Exception(negotiateResponse.Error);
                         }
-                        Log.ConnectionEstablished(_logger, negotiateResponse.ConnectionId);
+                        Log.ConnectionEstablished(_logger, negotiateResponse.ConnectionId!);
                         return negotiateResponse;
                     }
                 }
@@ -469,7 +489,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
             }
         }
 
-        private static Uri CreateConnectUrl(Uri url, string connectionId)
+        private static Uri CreateConnectUrl(Uri url, string? connectionId)
         {
             if (string.IsNullOrWhiteSpace(connectionId))
             {
@@ -511,34 +531,50 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
             var httpClientHandler = new HttpClientHandler();
             HttpMessageHandler httpMessageHandler = httpClientHandler;
 
+            var isBrowser = OperatingSystem.IsBrowser();
+
             if (_httpConnectionOptions != null)
             {
-                if (_httpConnectionOptions.Proxy != null)
+                if (!isBrowser)
                 {
-                    httpClientHandler.Proxy = _httpConnectionOptions.Proxy;
-                }
+                    // Configure options that do not work in the browser inside this if-block
+                    if (_httpConnectionOptions.Proxy != null)
+                    {
+                        httpClientHandler.Proxy = _httpConnectionOptions.Proxy;
+                    }
 
-                // Only access HttpClientHandler.ClientCertificates and HttpClientHandler.CookieContainer
-                // if the user has configured those options
-                // Some variants of Mono do not support client certs or cookies and will throw NotImplementedException
-                if (_httpConnectionOptions.Cookies.Count > 0)
-                {
-                    httpClientHandler.CookieContainer = _httpConnectionOptions.Cookies;
-                }
-                // https://github.com/aspnet/SignalR/issues/2232
-                var clientCertificates = _httpConnectionOptions.ClientCertificates;
-                if (clientCertificates?.Count > 0)
-                {
-                    httpClientHandler.ClientCertificates.AddRange(clientCertificates);
-                }
+                    try
+                    {
+                        // On supported platforms, we need to pass the cookie container to the http client
+                        // so that we can capture any cookies from the negotiate response and give them to WebSockets.
+                        httpClientHandler.CookieContainer = _httpConnectionOptions.Cookies;
+                    }
+                    // Some variants of Mono do not support client certs or cookies and will throw NotImplementedException or NotSupportedException
+                    // Also WASM doesn't support some settings in the browser
+                    catch (Exception ex) when (ex is NotSupportedException || ex is NotImplementedException)
+                    {
+                        Log.CookiesNotSupported(_logger);
+                    }
 
-                if (_httpConnectionOptions.UseDefaultCredentials != null)
-                {
-                    httpClientHandler.UseDefaultCredentials = _httpConnectionOptions.UseDefaultCredentials.Value;
-                }
-                if (_httpConnectionOptions.Credentials != null)
-                {
-                    httpClientHandler.Credentials = _httpConnectionOptions.Credentials;
+                    // Only access HttpClientHandler.ClientCertificates
+                    // if the user has configured those options
+                    // https://github.com/aspnet/SignalR/issues/2232
+
+                    var clientCertificates = _httpConnectionOptions.ClientCertificates;
+                    if (clientCertificates?.Count > 0)
+                    {
+                        httpClientHandler.ClientCertificates.AddRange(clientCertificates);
+                    }
+
+                    if (_httpConnectionOptions.UseDefaultCredentials != null)
+                    {
+                        httpClientHandler.UseDefaultCredentials = _httpConnectionOptions.UseDefaultCredentials.Value;
+                    }
+
+                    if (_httpConnectionOptions.Credentials != null)
+                    {
+                        httpClientHandler.Credentials = _httpConnectionOptions.Credentials;
+                    }
                 }
 
                 httpMessageHandler = httpClientHandler;
@@ -561,8 +597,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
             var httpClient = new HttpClient(httpMessageHandler);
             httpClient.Timeout = HttpClientTimeout;
 
-            // Start with the user agent header
-            httpClient.DefaultRequestHeaders.Add(Constants.UserAgent, Constants.UserAgentHeader);
+            var userSetUserAgent = false;
 
             // Apply any headers configured on the HttpConnectionOptions
             if (_httpConnectionOptions?.Headers != null)
@@ -572,6 +607,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
                     // Check if the key is User-Agent and remove if empty string then replace if it exists.
                     if (string.Equals(header.Key, Constants.UserAgent, StringComparison.OrdinalIgnoreCase))
                     {
+                        userSetUserAgent = true;
                         if (string.IsNullOrEmpty(header.Value))
                         {
                             httpClient.DefaultRequestHeaders.Remove(header.Key);
@@ -593,6 +629,14 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
                 }
             }
 
+            // Apply default user agent only if user hasn't specified one (empty or not)
+            // Don't pre-emptively set this, some frameworks (mono) have different user agent format rules,
+            // so allowing a user to set an empty one avoids throwing on those frameworks.
+            if (!userSetUserAgent)
+            {
+                httpClient.DefaultRequestHeaders.Add(Constants.UserAgent, Constants.UserAgentHeader);
+            }
+
             httpClient.DefaultRequestHeaders.Remove("X-Requested-With");
             // Tell auth middleware to 401 instead of redirecting
             httpClient.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
@@ -600,7 +644,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
             return httpClient;
         }
 
-        internal Task<string> GetAccessTokenAsync()
+        internal Task<string?> GetAccessTokenAsync()
         {
             if (_accessTokenProvider == null)
             {
@@ -619,7 +663,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
 
         private static bool IsWebSocketsSupported()
         {
-#if NETSTANDARD2_1
+#if NETSTANDARD2_1 || NETCOREAPP
             // .NET Core 2.1 and above has a managed implementation
             return true;
 #else
@@ -637,11 +681,11 @@ namespace Microsoft.AspNetCore.Http.Connections.Client
 
         private async Task<NegotiationResponse> GetNegotiationResponseAsync(Uri uri, CancellationToken cancellationToken)
         {
-            var negotiationResponse = await NegotiateAsync(uri, _httpClient, _logger, cancellationToken);
+            var negotiationResponse = await NegotiateAsync(uri, _httpClient!, _logger, cancellationToken);
             // If the negotiationVersion is greater than zero then we know that the negotiation response contains a
             // connectionToken that will be required to conenct. Otherwise we just set the connectionId and the
             // connectionToken on the client to the same value.
-            _connectionId = negotiationResponse.ConnectionId;
+            _connectionId = negotiationResponse.ConnectionId!;
             if (negotiationResponse.Version == 0)
             {
                 negotiationResponse.ConnectionToken = _connectionId;

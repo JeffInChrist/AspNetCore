@@ -15,7 +15,7 @@ namespace Microsoft.AspNetCore.WebSockets
         /// <summary>
         /// Gets request headers needed process the handshake on the server.
         /// </summary>
-        public static readonly IEnumerable<string> NeededHeaders = new[]
+        public static readonly string[] NeededHeaders = new[]
         {
             HeaderNames.Upgrade,
             HeaderNames.Connection,
@@ -34,7 +34,7 @@ namespace Microsoft.AspNetCore.WebSockets
         };
 
         // Verify Method, Upgrade, Connection, version,  key, etc..
-        public static bool CheckSupportedWebSocketRequest(string method, IEnumerable<KeyValuePair<string, string>> headers)
+        public static bool CheckSupportedWebSocketRequest(string method, List<KeyValuePair<string, string>> interestingHeaders, IHeaderDictionary requestHeaders)
         {
             bool validUpgrade = false, validConnection = false, validKey = false, validVersion = false;
 
@@ -43,11 +43,11 @@ namespace Microsoft.AspNetCore.WebSockets
                 return false;
             }
 
-            foreach (var pair in headers)
+            foreach (var pair in interestingHeaders)
             {
                 if (string.Equals(HeaderNames.Connection, pair.Key, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (string.Equals(Constants.Headers.ConnectionUpgrade, pair.Value, StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(HeaderNames.Upgrade, pair.Value, StringComparison.OrdinalIgnoreCase))
                     {
                         validConnection = true;
                     }
@@ -72,12 +72,26 @@ namespace Microsoft.AspNetCore.WebSockets
                 }
             }
 
+            // WebSockets are long lived; so if the header values are valid we switch them out for the interned versions.
+            if (validConnection && requestHeaders[HeaderNames.Connection].Count == 1)
+            {
+                requestHeaders[HeaderNames.Connection] = HeaderNames.Upgrade;
+            }
+            if (validUpgrade && requestHeaders[HeaderNames.Upgrade].Count == 1)
+            {
+                requestHeaders[HeaderNames.Upgrade] = Constants.Headers.UpgradeWebSocket;
+            }
+            if (validVersion && requestHeaders[HeaderNames.SecWebSocketVersion].Count == 1)
+            {
+                requestHeaders[HeaderNames.SecWebSocketVersion] = Constants.Headers.SupportedVersion;
+            }
+
             return validConnection && validUpgrade && validVersion && validKey;
         }
 
-        public static void GenerateResponseHeaders(string key, string subProtocol, IHeaderDictionary headers)
+        public static void GenerateResponseHeaders(string key, string? subProtocol, IHeaderDictionary headers)
         {
-            headers[HeaderNames.Connection] = Constants.Headers.ConnectionUpgrade;
+            headers[HeaderNames.Connection] = HeaderNames.Upgrade;
             headers[HeaderNames.Upgrade] = Constants.Headers.UpgradeWebSocket;
             headers[HeaderNames.SecWebSocketAccept] = CreateResponseKey(key);
             if (!string.IsNullOrWhiteSpace(subProtocol))
@@ -110,23 +124,20 @@ namespace Microsoft.AspNetCore.WebSockets
             // this concatenated value to obtain a 20-byte value and base64-encoding"
             // https://tools.ietf.org/html/rfc6455#section-4.2.2
 
-            using (var algorithm = SHA1.Create())
+            // requestKey is already verified to be small (24 bytes) by 'IsRequestKeyValid()' and everything is 1:1 mapping to UTF8 bytes
+            // so this can be hardcoded to 60 bytes for the requestKey + static websocket string
+            Span<byte> mergedBytes = stackalloc byte[60];
+            Encoding.UTF8.GetBytes(requestKey, mergedBytes);
+            EncodedWebSocketKey.CopyTo(mergedBytes.Slice(24));
+
+            Span<byte> hashedBytes = stackalloc byte[20];
+            var written = SHA1.HashData(mergedBytes, hashedBytes);
+            if (written != 20)
             {
-                // requestKey is already verified to be small (24 bytes) by 'IsRequestKeyValid()' and everything is 1:1 mapping to UTF8 bytes
-                // so this can be hardcoded to 60 bytes for the requestKey + static websocket string
-                Span<byte> mergedBytes = stackalloc byte[60];
-                Encoding.UTF8.GetBytes(requestKey, mergedBytes);
-                EncodedWebSocketKey.CopyTo(mergedBytes.Slice(24));
-
-                Span<byte> hashedBytes = stackalloc byte[20];
-                var success = algorithm.TryComputeHash(mergedBytes, hashedBytes, out var written);
-                if (!success || written != 20)
-                {
-                    throw new InvalidOperationException("Could not compute the hash for the 'Sec-WebSocket-Accept' header.");
-                }
-
-                return Convert.ToBase64String(hashedBytes);
+                throw new InvalidOperationException("Could not compute the hash for the 'Sec-WebSocket-Accept' header.");
             }
+
+            return Convert.ToBase64String(hashedBytes);
         }
     }
 }

@@ -3,6 +3,7 @@
 
 using System;
 using System.Linq.Expressions;
+using System.Runtime.CompilerServices;
 
 namespace Microsoft.AspNetCore.Components.Forms
 {
@@ -35,7 +36,7 @@ namespace Microsoft.AspNetCore.Components.Forms
         /// <param name="fieldName">The name of the editable field.</param>
         public FieldIdentifier(object model, string fieldName)
         {
-            if (model == null)
+            if (model is null)
             {
                 throw new ArgumentNullException(nameof(model));
             }
@@ -64,10 +65,19 @@ namespace Microsoft.AspNetCore.Components.Forms
 
         /// <inheritdoc />
         public override int GetHashCode()
-            => (Model, FieldName).GetHashCode();
+        {
+            // We want to compare Model instances by reference. RuntimeHelpers.GetHashCode returns identical hashes for equal object references (ignoring any `Equals`/`GetHashCode` overrides) which is what we want.
+            var modelHash = RuntimeHelpers.GetHashCode(Model);
+            var fieldHash = StringComparer.Ordinal.GetHashCode(FieldName);
+            return (
+                modelHash,
+                fieldHash
+            )
+            .GetHashCode();
+        }
 
         /// <inheritdoc />
-        public override bool Equals(object obj)
+        public override bool Equals(object? obj)
             => obj is FieldIdentifier otherIdentifier
             && Equals(otherIdentifier);
 
@@ -75,7 +85,7 @@ namespace Microsoft.AspNetCore.Components.Forms
         public bool Equals(FieldIdentifier otherIdentifier)
         {
             return
-                otherIdentifier.Model == Model &&
+                ReferenceEquals(otherIdentifier.Model, Model) &&
                 string.Equals(otherIdentifier.FieldName, FieldName, StringComparison.Ordinal);
         }
 
@@ -101,20 +111,32 @@ namespace Microsoft.AspNetCore.Components.Forms
 
             // Get a reference to the model object
             // i.e., given an value like "(something).MemberName", determine the runtime value of "(something)",
-            switch (memberExpression.Expression)
+            if (memberExpression.Expression is ConstantExpression constantExpression)
             {
-                case ConstantExpression constantExpression:
-                    model = constantExpression.Value;
-                    break;
-                default:
-                    // It would be great to cache this somehow, but it's unclear there's a reasonable way to do
-                    // so, given that it embeds captured values such as "this". We could consider special-casing
-                    // for "() => something.Member" and building a cache keyed by "something.GetType()" with values
-                    // of type Func<object, object> so we can cheaply map from "something" to "something.Member".
-                    var modelLambda = Expression.Lambda(memberExpression.Expression);
-                    var modelLambdaCompiled = (Func<object>)modelLambda.Compile();
-                    model = modelLambdaCompiled();
-                    break;
+                if (constantExpression.Value is null)
+                {
+                    throw new ArgumentException("The provided expression must evaluate to a non-null value.");
+                }
+                model = constantExpression.Value;
+            }
+            else if (memberExpression.Expression != null)
+            {
+                // It would be great to cache this somehow, but it's unclear there's a reasonable way to do
+                // so, given that it embeds captured values such as "this". We could consider special-casing
+                // for "() => something.Member" and building a cache keyed by "something.GetType()" with values
+                // of type Func<object, object> so we can cheaply map from "something" to "something.Member".
+                var modelLambda = Expression.Lambda(memberExpression.Expression);
+                var modelLambdaCompiled = (Func<object?>)modelLambda.Compile();
+                var result = modelLambdaCompiled();
+                if (result is null)
+                {
+                    throw new ArgumentException("The provided expression must evaluate to a non-null value.");
+                }
+                model = result;
+            }
+            else
+            {
+                throw new ArgumentException($"The provided expression contains a {accessorBody.GetType().Name} which is not supported. {nameof(FieldIdentifier)} only supports simple member accessors (fields, properties) of an object.");
             }
         }
     }

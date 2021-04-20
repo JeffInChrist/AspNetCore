@@ -229,7 +229,7 @@ namespace Microsoft.AspNetCore.Server.HttpSys
             {
                 httpContext.Response.AppendTrailer("trailername", "TrailerValue");
                 await httpContext.Response.CompleteAsync();
-                await trailersReceived.Task.WithTimeout();
+                await trailersReceived.Task.DefaultTimeout();
             }))
             {
                 var response = await SendRequestAsync(address);
@@ -251,7 +251,7 @@ namespace Microsoft.AspNetCore.Server.HttpSys
                 await httpContext.Response.WriteAsync("Hello World");
                 httpContext.Response.AppendTrailer("TrailerName", "Trailer Value");
                 await httpContext.Response.CompleteAsync();
-                await trailersReceived.Task.WithTimeout();
+                await trailersReceived.Task.DefaultTimeout();
             }))
             {
                 var response = await SendRequestAsync(address);
@@ -266,7 +266,7 @@ namespace Microsoft.AspNetCore.Server.HttpSys
 
         [ConditionalFact]
         [MinimumOSVersion(OperatingSystems.Windows, "10.0.19529", SkipReason = "Requires HTTP/2 Trailers support.")]
-        public async Task ResponseTrailers_MultipleValues_SentAsSeperateHeaders()
+        public async Task ResponseTrailers_MultipleValues_SentAsSeparateHeaders()
         {
             using (Utilities.CreateDynamicHttpsServer(out var address, httpContext =>
             {
@@ -278,7 +278,7 @@ namespace Microsoft.AspNetCore.Server.HttpSys
                 response.EnsureSuccessStatusCode();
                 Assert.Equal(HttpVersion.Version20, response.Version);
                 Assert.NotEmpty(response.TrailingHeaders);
-                // We can't actually assert they are sent as seperate headers using HttpClient, we'd have to write a lower level test
+                // We can't actually assert they are sent as separate headers using HttpClient, we'd have to write a lower level test
                 // that read the header frames directly.
                 Assert.Equal(new[] { "TrailerValue0", "TrailerValue1" }, response.TrailingHeaders.GetValues("TrailerName"));
             }

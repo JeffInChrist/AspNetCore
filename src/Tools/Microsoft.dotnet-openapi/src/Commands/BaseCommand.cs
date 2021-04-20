@@ -138,12 +138,12 @@ namespace Microsoft.DotNet.OpenApi.Commands
 
         internal bool IsProjectFile(string file)
         {
-            return File.Exists(Path.GetFullPath(file)) && file.EndsWith(".csproj");
+            return File.Exists(Path.GetFullPath(file)) && file.EndsWith(".csproj", StringComparison.Ordinal);
         }
 
         internal bool IsUrl(string file)
         {
-            return Uri.TryCreate(file, UriKind.Absolute, out var _) && file.StartsWith("http");
+            return Uri.TryCreate(file, UriKind.Absolute, out var _) && file.StartsWith("http", StringComparison.Ordinal);
         }
 
         internal async Task AddOpenAPIReference(
@@ -159,7 +159,7 @@ namespace Microsoft.DotNet.OpenApi.Commands
             var items = project.GetItems(tagName);
             var fileItems = items.Where(i => string.Equals(GetFullPath(i.EvaluatedInclude), GetFullPath(sourceFile), StringComparison.Ordinal));
 
-            if (fileItems.Count() > 0)
+            if (fileItems.Any())
             {
                 Warning.Write($"One or more references to {sourceFile} already exist in '{project.FullPath}'. Duplicate references could lead to unexpected behavior.");
                 return;
@@ -240,12 +240,19 @@ namespace Microsoft.DotNet.OpenApi.Commands
 
             if (process.ExitCode != 0)
             {
-                var output = await process.StandardOutput.ReadToEndAsync();
-                var error = await process.StandardError.ReadToEndAsync();
-                await Out.WriteAsync(output);
-                await Error.WriteAsync(error);
+                using var csprojStream = projectFile.OpenRead();
+                using var csprojReader = new StreamReader(csprojStream);
+                var csprojContent = await csprojReader.ReadToEndAsync();
+                // We suspect that sometimes dotnet add package is giving a non-zero exit code when it has actually succeeded.
+                if (!csprojContent.Contains($"<PackageReference Include=\"{packageId}\" Version=\"{packageVersion}\""))
+                {
+                    var output = await process.StandardOutput.ReadToEndAsync();
+                    var error = await process.StandardError.ReadToEndAsync();
+                    await Out.WriteAsync(output);
+                    await Error.WriteAsync(error);
 
-                throw new ArgumentException($"Could not add package `{packageId}` to `{projectFile.Directory}` due to: `{error}`");
+                    throw new ArgumentException($"Adding package `{packageId}` to `{projectFile.Directory}` returned ExitCode `{process.ExitCode}` and gave error `{error}` and output `{output}`");
+                }
             }
         }
 
@@ -376,7 +383,7 @@ namespace Microsoft.DotNet.OpenApi.Commands
             else
             {
                 var uri = new Uri(url);
-                if (uri.Segments.Count() > 0 && uri.Segments.Last() != "/")
+                if (uri.Segments.Any() && uri.Segments.Last() != "/")
                 {
                     var lastSegment = uri.Segments.Last();
                     if (!Path.HasExtension(lastSegment))
@@ -506,19 +513,7 @@ namespace Microsoft.DotNet.OpenApi.Commands
 
         private static byte[] GetHash(Stream stream)
         {
-            SHA256 algorithm;
-            try
-            {
-                algorithm = SHA256.Create();
-            }
-            catch (TargetInvocationException)
-            {
-                // SHA256.Create is documented to throw this exception on FIPS-compliant machines. See
-                // https://msdn.microsoft.com/en-us/library/z08hz7ad Fall back to a FIPS-compliant SHA256 algorithm.
-                algorithm = new SHA256CryptoServiceProvider();
-            }
-
-            using (algorithm)
+            using (var algorithm = SHA256.Create())
             {
                 return algorithm.ComputeHash(stream);
             }
